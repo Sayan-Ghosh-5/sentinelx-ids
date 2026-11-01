@@ -78,6 +78,7 @@ class Settings(BaseSettings):
             "openai": self.OPENAI_API_KEY,
             "anthropic": self.ANTHROPIC_API_KEY,
             "gemini": self.GEMINI_API_KEY,
+            "groq": self.GROQ_API_KEY,  
         }
         return keys.get(self.LLM_PROVIDER.lower(), "")
 

@@ -24,7 +24,7 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
-
+    GROQ = "groq"
 
 @dataclass
 class RateLimiter:
@@ -121,6 +121,12 @@ class LLMClient:
             )
             self._provider = LLMProvider.LOCAL
 
+        elif self._provider == LLMProvider.GEMINI:
+            self._model = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+
+        elif self._provider == LLMProvider.GROQ:
+            self._model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+
     def analyze(self, prompt: str, context: dict[str, Any] | None = None) -> str:
         """Analyze a prompt using the configured LLM provider.
 
@@ -148,6 +154,8 @@ class LLMClient:
 
             if self._provider == LLMProvider.OPENAI:
                 result = self._call_openai(prompt, context)
+            elif self._provider == LLMProvider.GROQ:
+                result = self._call_groq(prompt, context)
             elif self._provider == LLMProvider.ANTHROPIC:
                 result = self._call_anthropic(prompt, context)
             elif self._provider == LLMProvider.GEMINI:
@@ -281,6 +289,40 @@ class LLMClient:
             return response.text
         return self._local_analyze(prompt, context)
 
+    def _call_groq(self, prompt: str, context: dict[str, Any] | None) -> str:
+        """Call Groq API using its OpenAI-compatible endpoint."""
+        import httpx
+
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        system_content = (
+            "You are SentinelX SOC Copilot, an expert cybersecurity assistant. "
+            "Analyze alerts, map techniques to MITRE ATT&CK, and give concise recommendations."
+        )
+        if context:
+            prompt_with_context = f"Context:\n{json.dumps(context, indent=2)}\n\nUser Question:\n{prompt}"
+        else:
+            prompt_with_context = prompt
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": prompt_with_context},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1024,
+        }
+
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
     # ------------------------------------------------------------------
     # Local Fallback
     # ------------------------------------------------------------------
@@ -308,6 +350,7 @@ class LLMClient:
             LLMProvider.OPENAI: "OPENAI_API_KEY",
             LLMProvider.ANTHROPIC: "ANTHROPIC_API_KEY",
             LLMProvider.GEMINI: "GEMINI_API_KEY",
+            LLMProvider.GROQ: "GROQ_API_KEY",
         }
         env_var = key_map.get(self._provider)
         if env_var:
@@ -321,6 +364,7 @@ class LLMClient:
             LLMProvider.OPENAI: "gpt-4o-mini",
             LLMProvider.ANTHROPIC: "claude-sonnet-4-20250514",
             LLMProvider.GEMINI: "gemini-2.0-flash",
+            LLMProvider.GROQ: "openai/gpt-oss-120b",
         }
         return model_map.get(self._provider, "unknown")
 
