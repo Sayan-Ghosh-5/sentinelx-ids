@@ -230,9 +230,6 @@ async def update_alert(
     await audit(db, current_user, AuditAction.ALERT_UPDATE,
                 resource_type="alert", resource_id=str(alert_id),
                 description=f"Updated alert #{alert_id}: {', '.join(f'{k}→{v["to"]}' for k, v in changes.items())}",
-                description=f"Updated alert #{alert_id}: " + ", ".join(
-                    f"{k}→{v['to']}" for k, v in changes.items()
-                ),
                 extra={"changes": changes}, request=request)
     return AlertResponse.model_validate(alert)
 
