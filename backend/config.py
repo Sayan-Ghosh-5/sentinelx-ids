@@ -37,8 +37,20 @@ class Settings(BaseSettings):
 
     # ── Security ─────────────────────────────────────────────────────────
     SECRET_KEY: str = Field(
-        default="sentinelx-super-secret-key-change-in-production-2024",
-        description="JWT signing secret – MUST change in production",
+        default="",
+        description="JWT signing secret – MUST be configured in environment (min 32 chars)",
+    )
+    ENABLE_DEMO_ADMIN: bool = Field(
+        default=False,
+        description="Opt-in flag to seed a demo administrator account. Defaults to False.",
+    )
+    DEMO_ADMIN_USERNAME: str = Field(
+        default="admin",
+        description="Username for demo administrator if opt-in is enabled.",
+    )
+    DEMO_ADMIN_PASSWORD: str = Field(
+        default="",
+        description="Unique strong password for demo administrator if opt-in is enabled.",
     )
     ALGORITHM: str = Field(default="HS256", description="JWT signing algorithm")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
@@ -130,6 +142,31 @@ class Settings(BaseSettings):
     )
 
     # ── Validators ───────────────────────────────────────────────────────
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        insecure_defaults = {
+            "sentinelx-super-secret-key-change-in-production-2024",
+            "sentinelx-demo-secret-key-change-in-production",
+            "secret",
+            "changeme",
+            "your-secret-key",
+            "default_secret_key",
+        }
+        if not v or v in insecure_defaults or len(v) < 32:
+            raise ValueError(
+                "A strong SECRET_KEY (minimum 32 characters, non-default) must be provided in the environment."
+            )
+        return v
+
+    @field_validator("CORS_ORIGINS")
+    @classmethod
+    def validate_cors(cls, v: str) -> str:
+        origins = [o.strip() for o in v.split(",") if o.strip()]
+        if "*" in origins:
+            raise ValueError("Wildcard '*' in CORS_ORIGINS is not permitted with credentialed requests.")
+        return v
+
     @field_validator("PORT", "WS_PORT", "SYSLOG_PORT", "SMTP_PORT", mode="before")
     @classmethod
     def validate_port(cls, v: int | str) -> int:

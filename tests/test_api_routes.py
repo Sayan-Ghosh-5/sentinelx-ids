@@ -10,9 +10,9 @@ async def test_get_dashboard_summary(client: AsyncClient, auth_headers: dict[str
     resp = await client.get("/api/dashboard", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
-    assert "total_logs" in data
-    assert "total_alerts" in data
-    assert "active_rules" in data
+    assert "total_logs" in data["metrics"]
+    assert "total_alerts" in data["metrics"]
+    assert "active_rules" in data["metrics"]
 
 
 @pytest.mark.asyncio

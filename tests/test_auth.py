@@ -2,7 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
-from jose import jwt
+import jwt
 
 from backend.auth import (
     create_access_token,

@@ -17,11 +17,18 @@ Supported Event IDs:
 
 from __future__ import annotations
 
+import logging
 import re
-import xml.etree.ElementTree as ET
 from datetime import datetime
+import defusedxml.ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from parsers.base_parser import BaseParser, ParsedEvent
+
+logger = logging.getLogger('sentinelx.parsers.windows')
+
+# Maximum allowed XML payload size to prevent resource exhaustion (512 KB)
+MAX_XML_PAYLOAD_SIZE = 512 * 1024
 
 # ---------------------------------------------------------------------------
 # Event ID → metadata mapping
@@ -130,11 +137,23 @@ class WindowsEventParser(BaseParser):
         if not raw_line:
             return None
 
-        # Attempt full XML parse first, fall back to regex extraction
+        # Enforce maximum XML payload size
+        if len(raw_line.encode('utf-8', errors='ignore')) > MAX_XML_PAYLOAD_SIZE:
+            logger.warning('Windows event XML payload exceeded max size limit (%d bytes)', MAX_XML_PAYLOAD_SIZE)
+            return None
+
+        # Defused XML parsing with safe regex fallback
         try:
             return self._parse_xml(raw_line)
-        except ET.ParseError:
-            return self._parse_regex(raw_line)
+        except (ET.ParseError, DefusedXmlException) as exc:
+            logger.debug('Defused XML parsing rejected or failed (%s), attempting regex fallback', exc)
+            try:
+                return self._parse_regex(raw_line)
+            except Exception:
+                return None
+        except Exception as exc:
+            logger.debug('Unexpected error during XML parse: %s', exc)
+            return None
 
     # ------------------------------------------------------------------
     # Full XML parse path

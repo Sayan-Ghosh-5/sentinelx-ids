@@ -1,31 +1,28 @@
 """
 SentinelX IDS - Authentication Routes
 
-POST /auth/login   – Authenticate and receive JWT token
-POST /auth/register – Create a new user (admin only in non-demo mode)
-GET  /auth/me      – Return the current user's profile
+POST /auth/login    – Authenticate and receive JWT token (rate-limited)
+POST /auth/register – Create a new user (admin required for elevated roles; forces viewer for non-admins)
+GET  /auth/me       – Return the current user's profile
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.audit import audit
 from backend.auth import (
     create_access_token,
     get_current_user,
     get_password_hash,
-    require_role,
     verify_password,
 )
-from backend.config import settings
 from backend.database import get_db
-from backend.models import User, UserRole
-from backend.schemas import Token, UserCreate, UserLogin, UserResponse
-from backend.audit import audit
-from backend.models import AuditAction
-from fastapi import Request
+from backend.models import AuditAction, User, UserRole
+from backend.rate_limiter import login_rate_limiter
+from backend.schemas import Token, UserCreate, UserLogin, UserResponse, UserRoleEnum
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -40,18 +37,31 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> Token:
-    """Authenticate with username + password and receive a JWT token."""
+    """Authenticate with username + password and receive a JWT token.
+
+    Protected by sliding-window rate limiting to prevent brute-force attacks.
+    """
+    # Check rate limit before evaluating password
+    login_rate_limiter.check(request, credentials.username)
+
     result = await db.execute(
         select(User).where(User.username == credentials.username)
     )
     user = result.scalar_one_or_none()
 
     if user is None or not verify_password(credentials.password, user.hashed_password):
+        login_rate_limiter.record_failure(request, credentials.username)
         # Audit failed login attempt
-        await audit(db, None, AuditAction.LOGIN_FAILED,
-                    resource_type="auth", resource_id=credentials.username,
-                    description=f"Failed login attempt for '{credentials.username}'",
-                    request=request, status="failure")
+        await audit(
+            db,
+            None,
+            AuditAction.LOGIN_FAILED,
+            resource_type="auth",
+            resource_id=credentials.username,
+            description=f"Failed login attempt for '{credentials.username}'",
+            request=request,
+            status="failure",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
@@ -64,11 +74,18 @@ async def login(
             detail="User account is deactivated",
         )
 
+    # Successful login: reset throttle records
+    login_rate_limiter.record_success(request, credentials.username)
+
     token = create_access_token(data={"sub": user.username, "role": user.role.value})
-    await audit(db, user, AuditAction.LOGIN,
-                resource_type="auth",
-                description=f"User '{user.username}' logged in",
-                request=request)
+    await audit(
+        db,
+        user,
+        AuditAction.LOGIN,
+        resource_type="auth",
+        description=f"User '{user.username}' logged in",
+        request=request,
+    )
     return Token(
         access_token=token,
         token_type="bearer",
@@ -89,16 +106,20 @@ async def register(
 ) -> UserResponse:
     """Create a new user account.
 
-    In non-demo mode, only admins can register new users.
-    In demo mode, any authenticated user can register accounts.
+    Only an authenticated administrator can create elevated accounts (admin, analyst).
+    Ordinary registration forces the viewer role. Unauthenticated registration is rejected.
     """
-    if not settings.DEMO_MODE and current_user.role != UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can register new users in production mode",
-        )
+    if current_user.role == UserRole.ADMIN:
+        assigned_role = UserRole(user_in.role.value)
+    else:
+        if user_in.role != UserRoleEnum.VIEWER:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only administrators can assign elevated roles; ordinary registration forces the viewer role.",
+            )
+        assigned_role = UserRole.VIEWER
 
-    # Check for duplicate username
+    # Check for duplicate username or email
     existing = await db.execute(
         select(User).where(
             (User.username == user_in.username) | (User.email == user_in.email)
@@ -114,16 +135,21 @@ async def register(
         username=user_in.username,
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
-        role=UserRole(user_in.role.value),
+        role=assigned_role,
         is_active=True,
     )
     db.add(new_user)
     await db.flush()
     await db.refresh(new_user)
-    await audit(db, current_user, AuditAction.SYSTEM,
-                resource_type="user", resource_id=new_user.username,
-                description=f"Created new user '{new_user.username}' with role '{new_user.role.value}'",
-                extra={"new_user_id": new_user.id, "role": new_user.role.value})
+    await audit(
+        db,
+        current_user,
+        AuditAction.SYSTEM,
+        resource_type="user",
+        resource_id=new_user.username,
+        description=f"Created new user '{new_user.username}' with role '{new_user.role.value}'",
+        extra={"new_user_id": new_user.id, "role": new_user.role.value},
+    )
     return UserResponse.model_validate(new_user)
 
 

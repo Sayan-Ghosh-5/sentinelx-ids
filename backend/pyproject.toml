@@ -20,7 +20,8 @@ sqlalchemy = { version = "^2.0.0", extras = ["asyncio"] }
 aiosqlite = "^0.20.0"
 pydantic = "^2.10.0"
 pydantic-settings = "^2.7.0"
-python-jose = { version = "^3.3.0", extras = ["cryptography"] }
+pyjwt = { version = "^2.9.0", extras = ["crypto"] }
+defusedxml = "^0.7.1"
 passlib = { version = "^1.7.4", extras = ["bcrypt"] }
 python-multipart = "^0.0.18"
 websockets = "^14.0"
@@ -39,6 +40,7 @@ sentinelx = "backend.main:run"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [build-system]

@@ -17,7 +17,10 @@ export function AuthProvider({ children }) {
     setError(null);
     try {
       const data = await api.login(username, password);
-      const tkn = data.access_token || data.token || 'demo-token-' + Date.now();
+      const tkn = data.access_token || data.token;
+      if (!tkn) {
+        throw new Error('Authentication response did not contain an access token');
+      }
       const usr = data.user || { username, role: 'analyst' };
 
       localStorage.setItem('sentinelx_token', tkn);
@@ -26,16 +29,6 @@ export function AuthProvider({ children }) {
       setUser(usr);
       return true;
     } catch (err) {
-      // Demo mode fallback
-      if (username === 'admin' && password === 'sentinelx') {
-        const tkn = 'demo-token-' + Date.now();
-        const usr = { username: 'admin', role: 'admin', name: 'Admin User' };
-        localStorage.setItem('sentinelx_token', tkn);
-        localStorage.setItem('sentinelx_user', JSON.stringify(usr));
-        setToken(tkn);
-        setUser(usr);
-        return true;
-      }
       setError(err.message || 'Authentication failed');
       return false;
     } finally {

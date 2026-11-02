@@ -1,26 +1,30 @@
 """
 SentinelX IDS - JWT Authentication Module
 
-Provides password hashing, JWT token creation / verification,
+Provides password hashing, JWT token creation / verification using PyJWT,
 FastAPI dependencies for extracting the current user and enforcing
-role-based access control, and demo-mode auto-seeding.
+role-based access control, and opt-in demo administrator seeding.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+import bcrypt
+import jwt
+from jwt.exceptions import PyJWTError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-import bcrypt
-from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
 from backend.database import async_session, get_db
 from backend.models import User, UserRole
+
+logger = logging.getLogger("sentinelx.auth")
 
 # ── OAuth2 Scheme ────────────────────────────────────────────────────────
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
@@ -61,7 +65,7 @@ def create_access_token(
     data:
         Payload claims – must include at least ``{"sub": "<username>"}``.
     expires_delta:
-        Custom TTL.  Falls back to ``ACCESS_TOKEN_EXPIRE_MINUTES`` from settings.
+        Custom TTL. Falls back to ``ACCESS_TOKEN_EXPIRE_MINUTES`` from settings.
 
     Returns
     -------
@@ -95,7 +99,7 @@ def verify_token(token: str) -> dict:
         if username is None:
             raise credentials_exception
         return payload
-    except JWTError:
+    except PyJWTError:
         raise credentials_exception
 
 
@@ -109,16 +113,9 @@ async def get_current_user(
 ) -> User:
     """Extract the current authenticated user from the Bearer token.
 
-    In **demo mode** with no token provided, returns the demo admin user
-    so the UI works without requiring login.
+    Authentication is strictly required for all protected routes, including
+    in demo mode.
     """
-    # Demo-mode: no token or frontend demo placeholder token
-    if settings.DEMO_MODE and (token is None or token.startswith("demo-token")):
-        result = await db.execute(select(User).where(User.username == "admin"))
-        demo_user = result.scalar_one_or_none()
-        if demo_user is not None:
-            return demo_user
-
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -175,26 +172,37 @@ def require_role(allowed_roles: List[str]):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Demo seed
+# Demo seed (Opt-in only with unique password)
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def seed_demo_user() -> None:
-    """Create the default admin user when DEMO_MODE is enabled.
+    """Create a demo admin user ONLY if explicitly opted in via ENABLE_DEMO_ADMIN."""
+    if not settings.ENABLE_DEMO_ADMIN:
+        logger.info("Demo administrator seeding disabled (ENABLE_DEMO_ADMIN=false)")
+        return
 
-    Idempotent: skips creation if the admin user already exists.
-    """
+    password = settings.DEMO_ADMIN_PASSWORD
+    if not password or password == "sentinelx" or len(password) < 8:
+        logger.warning(
+            "ENABLE_DEMO_ADMIN is true but DEMO_ADMIN_PASSWORD is empty, insecure ('sentinelx'), or too short (< 8 chars). Skipping demo admin seed."
+        )
+        return
+
     async with async_session() as session:
-        result = await session.execute(select(User).where(User.username == "admin"))
+        result = await session.execute(
+            select(User).where(User.username == settings.DEMO_ADMIN_USERNAME)
+        )
         existing = result.scalar_one_or_none()
         if existing is not None:
             return
 
         admin = User(
-            username="admin",
-            email="admin@sentinelx.local",
-            hashed_password=get_password_hash("sentinelx"),
+            username=settings.DEMO_ADMIN_USERNAME,
+            email=f"{settings.DEMO_ADMIN_USERNAME}@sentinelx.local",
+            hashed_password=get_password_hash(password),
             role=UserRole.ADMIN,
             is_active=True,
         )
         session.add(admin)
         await session.commit()
+        logger.info("Created opt-in demo administrator '%s'", settings.DEMO_ADMIN_USERNAME)
